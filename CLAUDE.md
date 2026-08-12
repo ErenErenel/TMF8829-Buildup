@@ -17,10 +17,12 @@ automatically at the start of every session here.
 **Phase:** Phase 1 — I2C, 8×8, Arduino framework (PlatformIO,
 `board = nucleo_h563zi`, `framework = arduino`, `upload_protocol = mbed`)
 
-**Status:** Phase 1 definition of done reached — all bring-up checklist
-items confirmed, including distance sanity-check against a real ~350mm
-wall measurement. Now doing polish/follow-on work: distance-to-color
-terminal heatmap.
+**Status:** Phase 1 complete and pushed to GitHub (private repo:
+https://github.com/ErenErenel/TMF8829-Buildup). Distance-to-color
+terminal heatmap done, with low-confidence zones grayed out. Now
+starting Phase 2 (I3C) on a dedicated branch, `phase2-i3c`, tracking
+`origin/phase2-i3c` — `master` stays on the validated Phase 1 state as
+a fallback while I3C work is iterated on.
 
 **Definition of done for this phase:** live 8×8 distance/confidence
 frame streaming from the TMF8829 to a PC over serial, via direct
@@ -49,6 +51,59 @@ NUCLEO-H563ZI.
 ---
 
 ## Changelog
+
+### 2026-08-12 — Pushed to GitHub; started Phase 2 (I3C) on its own branch
+- Repo pushed to GitHub for the first time: private repo at
+  https://github.com/ErenErenel/TMF8829-Buildup. Neither `git` nor `gh`
+  CLI were installed on this machine beforehand -- both installed via
+  `winget` (`Git.Git`, `GitHub.cli`), then `gh auth login --web`
+  (browser device-code flow) to authenticate as GitHub user
+  `ErenErenel`. `.claude/settings.local.json` excluded via `.gitignore`
+  (Claude Code's own convention: "local" settings files stay untracked).
+- Created and pushed a `phase2-i3c` branch off `master` (which stays on
+  the validated Phase 1 state as a fallback) to do the I3C work on.
+- **Phase 2 (I3C) research/scoping done, no code written yet.**
+  Findings from the datasheet (§7.10, pages 37-38) and the STM32H5 HAL
+  headers actually present in this PlatformIO toolchain
+  (`framework-arduinoststm32/system/Drivers/STM32H5xx_HAL_Driver`):
+  - PB8/PB9 (already wired, no rewiring needed) support I3C1 natively
+    via `GPIO_AF3_I3C1` -- confirmed in this variant's `PeripheralPins.c`.
+  - The full H5 I3C controller-role HAL API is already in the
+    toolchain (`HAL_I3C_Init`, `HAL_I3C_Ctrl_Config`,
+    `HAL_I3C_Ctrl_DynAddrAssign`, `HAL_I3C_Ctrl_TransmitCCC`,
+    `HAL_I3C_Ctrl_Transmit`/`Receive`, etc.) -- nothing extra to
+    install for the HAL side.
+  - **Key protocol fact that shapes the implementation:** the TMF8829
+    is a real MIPI I3C v1.0 device (up to 12.5MHz) but boots up in
+    legacy I2C mode and stays there until the host performs an explicit
+    **dynamic address assignment** (`SETDASA` or `ENTDAA` CCC command).
+    Only after that does it switch into I3C SDR mode and unlock the
+    real throughput gain -- just wiring/talking to it isn't enough,
+    there's a required handshake first.
+  - Required implementation steps identified: (1) I3C1 peripheral init
+    as controller (clock, GPIO AF3 remap, `HAL_I3C_Init` +
+    `Ctrl_Config` + bus characteristic/timing config -- I3C has its own
+    distinct SDR timing model per datasheet Figure 19, separate from
+    I2C's Figure 18); (2) the dynamic address assignment sequence;
+    (3) new transport functions in `tmf8829_shim.cpp` replacing the
+    `Wire`-based `i2cTxReg`/`i2cRxReg`/`i2cTxRx` with
+    `HAL_I3C_Ctrl_Transmit`/`Receive` equivalents -- this is the bulk
+    of the new code needed.
+  - **Good news:** `tmf8829.c` (chip protocol/firmware-download/result
+    parsing logic) never touches the bus directly, only calls the
+    shim's transport functions -- so none of that logic needs to
+    change, only the transport layer underneath it.
+  - Not yet consulted: ST app note AN5879 ("Introduction to I3C for
+    STM32H5 series MCU") -- no local copy, wasn't fetched (no URL was
+    given and one wasn't guessed). Worth pulling in before actually
+    writing the peripheral init code, for the exact register-sequence
+    details CubeMX would normally generate.
+  - Separately (independent of I3C): our zone decoder currently
+    hardcodes 8x8/single-I2C-chunk assumptions; higher resolutions will
+    need chunk-spanning logic regardless of I2C vs I3C transport.
+- Next: either pull in AN5879, or start sketching the I3C1 peripheral
+  init sequence directly against the HAL headers already in the
+  toolchain.
 
 ### 2026-08-12 — Low-confidence zones grayed out in the color grid
 - Added `TMF8829_CONFIDENCE_DISPLAY_THRESHOLD` (40, a rough fixed
