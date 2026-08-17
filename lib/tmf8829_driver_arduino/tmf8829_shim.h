@@ -28,8 +28,13 @@ extern "C"
 #endif
 
 // ---------------------------------------------- defines -----------------------------------------
-#define DATA_BUFFER_SIZE                      500   /**< buffer size for transfer/receive buffer  */
-#define ARDUINO_MAX_I2C_TRANSFER              32    /**< Arduino Uno can only handle up to 32 bytes in a single i2c tx/rx */
+/** Transfer/receive buffer size. Sized so the largest result frame the device
+ * produces (48x32: payload 2328 -> 2316 bytes to read) fits in a single I3C
+ * transaction rather than being chunked by tmf8829ReadResults() -- this is
+ * the payoff for moving off I2C, where Arduino's Wire capped transfers at 32
+ * bytes. Costs ~1.9kB each for the driver's dataBuffer and the shim's TX
+ * scratch buffer, trivial against the H563's 640kB RAM. */
+#define DATA_BUFFER_SIZE                      2400
 
 #define ENABLE_PIN                            PE9   /**< D6 on the Nucleo Zio header -- TMF8829 EN pin, see ../tmf8829/PROJECT (1).md wiring table */
 #define INTERRUPT_PIN                         PE11  /**< D5 on the Nucleo Zio header -- TMF8829 INT pin (active-low, open-drain) */

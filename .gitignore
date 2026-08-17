@@ -4,3 +4,6 @@
 .vscode/launch.json
 .vscode/ipch
 .claude/settings.local.json
+.venv
+__pycache__/
+.captures/
