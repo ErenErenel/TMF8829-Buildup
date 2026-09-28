@@ -131,7 +131,7 @@ def capture(args) -> None:
 
     if not frames:
         print("No frames received. Is the board measuring with binary streaming on "
-              "('m' then 'b')?")
+              "('m' then 'v')?")
         return
 
     subs = [f for f in frames if f.is_subframe or f.zone_count != f.grid_w * f.grid_h]

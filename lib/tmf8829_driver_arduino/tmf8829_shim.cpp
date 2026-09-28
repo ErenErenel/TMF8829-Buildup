@@ -108,9 +108,76 @@ static void i3c1GpioInit ( )
   HAL_GPIO_Init( GPIOB, &gpio );
 }
 
-// Datasheet-derived (DS001140 v2-00 p.14) but deliberately conservative
-// (correctness over speed) -- see Stage 1 notes in CLAUDE.md. Not yet tuned
-// for the full 12.5MHz SDR ceiling.
+// ---- I3C SCL timing (DS001140 v2-00 p.14) ----------------------------------
+//
+// The original Stage 1 values were 500ns high + 500ns low = a 1us period, i.e.
+// a 1 MHz bus against the part's 12.5 MHz typical ceiling. That was a
+// deliberate correctness-over-speed bring-up choice that was never revisited,
+// and on 2026-08-25 it was measured to be THE frame-rate bottleneck: 'tHIGH'
+// reported bus=75.0ms per 48x32 sub-frame to move 2316 bytes (~31 kB/s),
+// against emit=11.7ms and a period of 93.7ms. Two thirds of every measurement
+// cycle was spent clocking bytes at a twelfth of the available rate.
+//
+// The datasheet's constraints, and how these numbers satisfy them:
+//
+//   push-pull   fSCL      0 .. 12.5 MHz typ (12.9 max)
+//               tLOW      >= 24ns   (>= 32ns measured at the receiver, tDIG_L)
+//               tHIGH     >= 24ns   (>= 32ns at the receiver, tDIG_H)
+//               tCR/tCF   <= 150/fSCL ns
+//   open drain  tLOW_OD   >= 200ns
+//               tHIGH     24 .. 41ns
+//
+// 80ns high + 170ns low = a 250ns period = 4 MHz. A 4x step rather than the
+// full 12.5x, because this is the first change to bus timing since bring-up
+// and a wrong value here costs a reflash to diagnose. Both halves keep real
+// margin over the 32ns receiver minimum even after edge rates are subtracted
+// (at 4 MHz the tCR/tCF budget is 37.5ns, leaving ~42ns flat in the high
+// phase). Raise further only after this is confirmed clean.
+//
+// The open-drain LOW duration is deliberately NOT touched. It stays at 1000ns,
+// 5x the 200ns minimum, because open-drain phases are where SDA is released to
+// the pull-ups (R8/R9, 2.2k) and where the ~100ns measured rise time has to
+// fit. Those phases carry DAA/CCC -- SETDASA and DISEC -- so slow-and-certain
+// is the right trade there. It also means this change should NOT affect the
+// I3C_SER_ANACK seen on 2026-08-25: an address NACK is an open-drain
+// addressing-phase failure, and nothing in that phase changes here.
+//
+// Note also that SCLI3CHighDuration governs the high period in BOTH push-pull
+// and open-drain phases on this peripheral, so the old 500ns value exceeded
+// the datasheet's 41ns open-drain tHIGH maximum by 12x. Benign here -- that
+// maximum exists so legacy I2C devices on a mixed bus cannot mistake I3C
+// traffic for a valid clock, and this bus has no legacy device on it -- but
+// the new 80ns is much closer to intent, and 40ns would be fully compliant if
+// a mixed bus ever mattered.
+// 2026-08-25: 170/80 (4 MHz) was tried and FAILED ON HARDWARE. SETDASA still
+// succeeded -- no "I3C-SETDASA failed", so open-drain addressing survived --
+// but the device never reached cpu_ready afterwards ("pwup ENABLE=0x4",
+// "#Err,CPU not ready", chip version 0.0, serial 0x0). That points at the
+// push-pull private transfers rather than the addressing phase, which is
+// consistent with 4 MHz being too fast for this wiring: the Click is attached
+// by jumper wires, not a shield, and unshielded jumpers of that length carry
+// enough capacitance to matter well before the part's own 12.5 MHz ceiling
+// does. The limit here is the interconnect, not the silicon.
+//
+// Reverted to the known-good bring-up values. Step candidates for a bisection,
+// each a separate flash-and-test (the failure mode is a dead device, not a
+// degraded one, so there is no way to sweep this from the host):
+//     500 / 500  ->  1.0 MHz   known good, current
+//     330 / 330  ->  1.5 MHz
+//     250 / 250  ->  2.0 MHz
+//     170 / 170  ->  2.9 MHz
+//     170 /  80  ->  4.0 MHz   known bad
+// Halving the push-pull LOW alone (500/250 -> 1.3 MHz) is the lowest-risk
+// probe, since SCLI3CHighDuration is the field that also governs the
+// open-drain high period and therefore the phases that carry DAA and CCC.
+#define TMF8829_I3C_PP_LOW_NS      500   /* push-pull SCL low  */
+#define TMF8829_I3C_HIGH_NS        500   /* SCL high, push-pull AND open drain */
+#define TMF8829_I3C_OD_LOW_NS     1000   /* open-drain SCL low: DAA/CCC, unchanged */
+#define TMF8829_I2C_HIGH_NS       1000   /* legacy I2C messages only; unused here */
+#define TMF8829_I3C_BUS_FREE_NS   1000
+
+// Converts a nanosecond duration into kernel-clock cycles for the timing
+// registers (8-bit fields, hence the clamp).
 static uint8_t i3cNsToCycles ( uint32_t kernelClkHz, uint32_t ns )
 {
   uint64_t cycles = ( (uint64_t)ns * kernelClkHz ) / 1000000000ULL;
@@ -131,12 +198,29 @@ static HAL_StatusTypeDef i3c1PeripheralInit ( )
   LL_I3C_CtrlBusConfTypeDef * bus = &hi3c1.Init.CtrlBusCharacteristic;
   bus->SDAHoldTime         = HAL_I3C_SDA_HOLD_TIME_0_5;
   bus->WaitTime             = HAL_I3C_OWN_ACTIVITY_STATE_0;
-  bus->SCLPPLowDuration     = i3cNsToCycles( kernelClkHz, 500 );
-  bus->SCLI3CHighDuration   = i3cNsToCycles( kernelClkHz, 500 );
-  bus->SCLODLowDuration     = i3cNsToCycles( kernelClkHz, 1000 );
-  bus->SCLI2CHighDuration   = i3cNsToCycles( kernelClkHz, 1000 );
-  bus->BusFreeDuration      = i3cNsToCycles( kernelClkHz, 1000 );
+  bus->SCLPPLowDuration     = i3cNsToCycles( kernelClkHz, TMF8829_I3C_PP_LOW_NS );
+  bus->SCLI3CHighDuration   = i3cNsToCycles( kernelClkHz, TMF8829_I3C_HIGH_NS );
+  bus->SCLODLowDuration     = i3cNsToCycles( kernelClkHz, TMF8829_I3C_OD_LOW_NS );
+  bus->SCLI2CHighDuration   = i3cNsToCycles( kernelClkHz, TMF8829_I2C_HIGH_NS );
+  bus->BusFreeDuration      = i3cNsToCycles( kernelClkHz, TMF8829_I3C_BUS_FREE_NS );
   bus->BusIdleDuration      = 0xFF; // hot-join timing; non-critical, HotJoinAllowed is DISABLE below
+
+  /* Report what was actually programmed, not what was requested. i3cNsToCycles
+   * truncates, and the I3C1 kernel clock is whatever the Arduino core's clock
+   * tree happens to give us -- so the achieved SCL rate is worth reading back
+   * rather than assuming. Printed once at open (and on each bus recovery,
+   * which is rare). */
+  PRINT_STR( "I3C kclk=" );
+  PRINT_UINT( kernelClkHz / 1000000U );
+  PRINT_STR( "MHz ppLow=" );
+  PRINT_UINT( bus->SCLPPLowDuration );
+  PRINT_STR( " high=" );
+  PRINT_UINT( bus->SCLI3CHighDuration );
+  PRINT_STR( " -> SCL~" );
+  PRINT_UINT( kernelClkHz / 1000U
+              / ( (uint32_t)bus->SCLPPLowDuration + bus->SCLI3CHighDuration ) );
+  PRINT_STR( "kHz" );
+  PRINT_LN( );
 
   HAL_StatusTypeDef status = HAL_I3C_Init( &hi3c1 );
   if ( status != HAL_OK ) return status;
@@ -491,11 +575,11 @@ void i2cOpen ( void * dptr, uint32_t i2cClockSpeedInHz )
   i3c1GpioInit( );
   i3c1PeripheralInit( );
 
-  // 'f' and 'b' are implemented in this shim, so they aren't listed by the
+  // 'f', 'v' and 't' are implemented in this shim, so they aren't listed by the
   // app's own 'h' help text -- mention them here instead.
   PRINT_STR( "f ... dump last frame at full resolution (shim)" );
   PRINT_LN( );
-  PRINT_STR( "b ... toggle binary frame streaming (shim)" );
+  PRINT_STR( "v ... toggle binary frame streaming (shim)" );
   PRINT_LN( );
   PRINT_STR( "t ... toggle per-sub-frame timing report (shim)" );
   PRINT_LN( );
@@ -552,26 +636,51 @@ static void printZoneFullDump ( void );   /* defined with the zone decoder below
 extern bool zoneBinaryStreamGet ( void );
 extern void zoneBinaryStreamSet ( bool on );
 
-/* 'f' (full-resolution dump) and 'b' (binary stream toggle) are handled here in
- * the shim rather than in tmf8829_app.cpp's key handler, so the vendored
- * app/driver sources stay unmodified -- the same reason every other platform
- * difference lives in this file. The key is consumed (return 0 = "no key"), so
- * the app never sees it and keeps reporting genuinely unknown keys as #Err,Cmd.
- * Neither key is used by the vendor app, so nothing is shadowed; they also
- * won't appear in the app's own 'h' help text, hence the startup hint printed
- * from i2cOpen(). */
+/* Defined in tmf8829_app.cpp (vendor, unmodified) and not declared in any
+ * header, so it is declared here. Both files are C++, so the mangled names
+ * match. See the mode guard in inputGetKey() below for why it is needed. */
+extern int8_t isInBinaryInputMode ( void );
+
+/* 'f' (full-resolution dump), 'v' (binary stream toggle) and 't' (frame timing)
+ * are handled here in the shim rather than in tmf8829_app.cpp's key handler, so
+ * the vendored app/driver sources stay unmodified -- the same reason every other
+ * platform difference lives in this file. The key is consumed (return 0 = "no
+ * key"), so the app never sees it and keeps reporting genuinely unknown keys as
+ * #Err,Cmd. They won't appear in the app's own 'h' help text, hence the startup
+ * hint printed from i2cOpen().
+ *
+ * Two constraints on which keys may be intercepted here, both learned the hard
+ * way -- see the 2026-08-19 CLAUDE.md entry:
+ *
+ * 1. 'b' is NOT available. The vendor app uses it to enter binary input mode
+ *    (tmf8829_app.cpp handleCharInput -> enterBinaryInputMode), which is how the
+ *    0x31/0x32 configuration commands are delivered -- the only way to set
+ *    measurement period and iteration count. This shim used to intercept 'b'
+ *    for the stream toggle, silently making that whole protocol unreachable.
+ *    The toggle now lives on 'v'; do not move it back.
+ *
+ * 2. The interception must be skipped while the app is in binary input mode.
+ *    In that mode every byte is command payload, not a key, so a payload byte
+ *    that happens to equal 'f'/'v'/'t' (0x66/0x76/0x74 -- all plausible values
+ *    in a 190-byte config page) would be eaten here and the payload silently
+ *    corrupted, leaving the app waiting forever for a byte that was consumed. */
 int8_t inputGetKey ( char *c )
 {
   *c = 0;
   if ( Serial.available() )
   {
     char key = Serial.read();
+    if ( isInBinaryInputMode( ) )
+    {
+      *c = key;                 /* payload byte -- pass through untouched */
+      return 1;
+    }
     if ( key == 'f' )
     {
       printZoneFullDump( );
       return 0;
     }
-    if ( key == 'b' )
+    if ( key == 'v' )
     {
       bool on = !zoneBinaryStreamGet( );
       zoneBinaryStreamSet( on );
@@ -820,7 +929,7 @@ static uint8_t  zoneFpMode     = 0;   /* low nibble of the frame ID, carried to 
 static uint32_t zoneFrameNum   = 0;   /* device frame counter, frame header PRE+4 */
 static uint32_t zoneSysTick    = 0;   /* device 125kHz tick, pre-header +1 -- host-side frame timing */
 
-// ---- Binary streaming ('b') --------------------------------------------------
+// ---- Binary streaming ('v') --------------------------------------------------
 // ASCII costs ~28 bytes/zone (a colored cell is ~25, confidence ~3), which at
 // 48x32 is ~43kB/frame against a 6600-byte budget (66ms cadence at 1Mbaud,
 // 8N1 -> 100kB/s). Packed binary is 3 bytes/zone + 24 of framing: 4632 bytes,
@@ -849,7 +958,7 @@ static uint32_t zoneSysTick    = 0;   /* device 125kHz tick, pre-header +1 -- ho
 
 static bool zoneBinaryStream = false;
 
-/* Accessors so the 'b' intercept in inputGetKey() -- which sits above this
+/* Accessors so the 'v' intercept in inputGetKey() -- which sits above this
  * file's zone-decoder section -- can reach the flag without hoisting the
  * decoder's state up with it. */
 bool zoneBinaryStreamGet ( void )      { return zoneBinaryStream; }

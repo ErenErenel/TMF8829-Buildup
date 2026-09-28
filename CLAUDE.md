@@ -18,10 +18,16 @@ automatically at the start of every session here.
 
 ## Current status
 
-**Phase:** Phase 2 — I3C transport, Arduino framework (PlatformIO,
-`board = nucleo_h563zi`, `framework = arduino`, `upload_protocol = mbed`),
-branch `phase2-i3c` tracking `origin/phase2-i3c` — `master` stays on the
-validated Phase 1 (I2C) state as a fallback.
+**Phase:** Phase 3 (starting 2026-09-28) — **port to an ESP32-S3 over SPI,
+with Wi-Fi streaming for commissioning.** Phase 2 (STM32H5 + I3C) is complete
+and committed as the fallback; see the 09-28 changelog entry for why the
+platform changes. Work continues on the ESP32-S3 dev board before any custom
+PCB exists.
+
+**Phase 2 (superseded, preserved):** I3C transport, Arduino framework
+(PlatformIO, `board = nucleo_h563zi`, `framework = arduino`,
+`upload_protocol = mbed`), branch `phase2-i3c` tracking `origin/phase2-i3c` —
+`master` stays on the validated Phase 1 (I2C) state as a fallback.
 
 **Status:** Phase 1 (I2C, 8×8) is complete and pushed to GitHub (private
 repo: https://github.com/ErenErenel/TMF8829-Buildup). Phase 2 (I3C)
@@ -36,21 +42,58 @@ Remaining: Stage 4 (frame-rate validation at 32×32/48×32) and the
 unresolved I3C bus wedge (see changelog — the DISEC/recovery build is
 now flashed and confirmed resident, but has not been soak-tested).
 
+**Operating mode, decided 2026-08-25: 16×16 (preconfig 67), not 48×32.**
+Measured on one scene, same sensor position: 48×32 gave 20% no-return at
+5.4fps and could not see a 3-4m room at all; 16×16 gave **4% no-return at
+30.3fps** with the walls clearly resolved. This is the datasheet's own
+Table 5 (p.16) appearing on the bench — 48×32 is specified to 2700mm
+against a white card at centre, 16×16 to 5900mm. Full resolution was the
+*phase* goal; it is not the right operating point for presence work. See
+the 08-25 entry.
+
+> **REOPENED 2026-09-28.** That decision was measured against a 3-4 m room.
+> The application's working distance is **8 inches (~203 mm)**, where every
+> mode is spec'd 13×+ beyond what is needed and range carries no weight at
+> all. The frame-rate half of the argument also weakens on SPI. Reselect on
+> **coverage and frame rate**, not reach — see the 09-28 entry.
+
 **Day-to-day operation is documented separately in `MANUAL.md`** — keys,
 the nine Preconfig values, and the commands. The Python viewer
 (`tools/tmf8829_viewer.py`) can drive the board by itself and shows the
 board's own replies, so a separate serial monitor is not needed.
 
-**Uncommitted as of this writing:** the shim changes, `tools/`,
-`MANUAL.md`, and `.captures/` are all untracked or modified — nothing has
-been committed since the initial Phase 2 work.
+**Working tree is clean as of 2026-09-28.** The ~1100 lines of 08-19/08-25
+work (renderer, soak tooling, viewer fixes) are committed, `pio run` verified
+clean at 11556 B RAM / 65916 B flash. This commit is the checkpoint before the
+ESP32 pivot and the rollback point the 08-25 note said was missing.
 
 **Definition of done for this phase:** live distance/confidence frame
 streaming from the TMF8829 to a PC over serial via I3C, at a resolution
 higher than Phase 1's 8×8, at a reasonable frame rate, direct (non-shield)
 wiring between the LightRanger 14 Click and the NUCLEO-H563ZI.
 
-**Open items:**
+**Open items — Phase 3 (ESP32-S3 / SPI / placement), in the order that wastes
+least effort:**
+- [ ] **Settle the 8-inch question: sensor standoff, or trigger threshold with
+      the sensor further back?** Blocks sensor count, mounting and mode. Nothing
+      downstream should be designed before this is answered.
+- [ ] **Build the placement/coverage visualisation** — project zones to 3D
+      using FOVX 67.9° / FOVY 52.8°, render top-down and side views in room
+      coordinates with the frustum drawn against the bore. Pure host-side
+      Python on the existing serial stream; no hardware change. Design it for
+      *N* posed sensors from the start.
+- [ ] **Prove the SPI transport on the existing Click + H5 rig** before any new
+      silicon — `tmf8829BootloaderCmdI2cOff()` selects SPI, the Click already
+      breaks SPI out to mikroBUS (R6/R7 on SDO/SCK'), and the result is a
+      working SPI shim to port. Confirm the 0.93 ms figure.
+- [ ] **Port to the ESP32-S3 dev board** (SPI + SoftAP + UDP), then the PCB.
+- [ ] **Reselect the operating mode** on coverage and frame rate at the real
+      working distance, not on reach.
+- [ ] **Persist coverage maps** (frames + preset + config page + sensor pose +
+      timestamp). This is the existing reproducible-capture item, now with a
+      concrete reason: it is the record that the hazard volume is covered.
+
+**Open items — Phase 2 (STM32/I3C, now the fallback path):**
 - [x] Stage 1: standalone I3C1 controller init + SETDASA dynamic address
       assignment + ID-register readback (0xE3 → 0x9E) — confirmed on
       hardware.
@@ -66,22 +109,101 @@ wiring between the LightRanger 14 Click and the NUCLEO-H563ZI.
       matching Phase 1's 8×8 result on the same ceiling to ~0.7%.
 - [x] Resolve grid orientation — **horizontal mirror** (`np.fliplr`), rows
       correct. Confirmed with a hand at two known positions.
-- [x] Flash and confirm binary streaming (`b`) + `tools/tmf8829_viewer.py`
-      against hardware — ~1400 frames, 30.3 fps, zero CRC errors.
+- [x] Flash and confirm binary streaming (then `b`, now **`v`**) +
+      `tools/tmf8829_viewer.py` against hardware — ~1400 frames, 30.3 fps, zero
+      CRC errors; re-confirmed on the `v` build at 29.9 fps, zero CRC errors.
 - [x] Stage 3b: sub-frame interleave is **alternating rows** — sub_result
       clear = even rows, set = odd rows. Confirmed at 32×32 and 48×32;
       full 1536-zone frames now assemble live in the viewer.
-- [ ] Stage 4: frame-rate validation/tuning at 32×32/48×32 against the
-      datasheet's 66ms cadence for those modes.
-- [ ] **Soak-test the DISEC/recovery build.** It is flashed and confirmed
-      resident (boot banner shows the `b ...` shim line), but has never
-      run long enough to hit the wedge. Unattended job — needs nobody
-      watching. This gates everything else; see the 08-13 wedge entry.
-- [ ] Explore, once the bus is trusted: higher frame rate, per-scene
-      colour range, a real GUI, and the actual goal — presence and
-      overhang detection. 16×16 at 30fps may beat 48×32 at 7fps for
-      detecting a moving arm; full resolution was the phase goal, not
-      necessarily the right operating point.
+- [x] Free up `b` for the vendor's binary config protocol (stream toggle moved
+      to `v`, intercept made mode-aware) — confirmed on hardware 2026-08-19.
+      This is what unblocks Stage 4.
+- [~] Stage 4: frame-rate validation/tuning at 32×32/48×32. **Largely
+      superseded 2026-09-28 by the SPI finding** — the deficit was transport,
+      and SPI at 20 MHz moves a sub-frame in 0.93 ms versus the 75 ms measured
+      on I3C, which leaves the sensor's own cadence as the only limit. The
+      config-page path still stands if iteration tuning is ever wanted: read
+      with `u`, change `TMF8829_CFG_PERIOD_MS` (0x22/0x23) and
+      `TMF8829_CFG_KILO_ITERATIONS` (0x24/0x25), write back with `0x31`.
+- [x] **Soak-test the DISEC/recovery build** — done 2026-08-19. Wedge
+      reproduced at 16.5 min / ~29,600 frames; `i3cRecoverBus()` fired and
+      genuinely restored the bus. DISEC did **not** prevent the wedge.
+- [x] **Host-side wedge watchdog** — `tools/tmf8829_soak.py`, built and
+      self-tested on hardware 2026-08-19. Detects the wedge (or an unexplained
+      stall), replays `s`→`d`→`e`→`m`→`v`, and continues; reports the clean
+      interval before each wedge so time-to-failure can be characterised.
+- [ ] **Run a long soak to characterise time-to-failure.** Two samples so far
+      (23+ and 16.5 min) — not enough to tell random from periodic. Now
+      cheap to gather: `tools/tmf8829_soak.py --minutes 480`.
+- [x] Per-scene colour range + confidence handling — done 2026-08-19, see the
+      renderer entry. Recovered 18% of zones that were being masked away.
+- [x] Explore whether 16×16 beats 48×32 for the actual goal — **answered
+      2026-08-25, decisively: yes.** See the operating-mode note above and the
+      08-25 entry. **Detection belongs in `tools/`, not in ams's GUI** — see
+      the 08-19 entry for why that path was evaluated and declined.
+- [x] Root-cause the frame-rate deficit — **done 2026-08-25 by measurement,
+      not inference.** `t` reports bus=75.0ms, emit=11.7ms against a
+      period=93.7ms at 48×32, i.e. 92% of every cycle is spent in our code and
+      **the I3C bus is 6× the cost of the UART**. The UART is innocent: 2328
+      bytes at 2Mbaud is 11.6ms, matching `emit` almost exactly.
+- [~] **Raise the I3C push-pull clock — DROPPED 2026-09-28.** Superseded by
+      SPI, which is both faster than I3C's ceiling and unaffected by the
+      jumper-wire edge degradation that killed 4 MHz. Kept below only as the
+      record of what was tried, should the I3C path ever be revisited.
+      **ATTEMPTED 2026-08-25, 4 MHz FAILED,
+      reverted to the working 1 MHz.** `i3c1PeripheralInit()` is back at
+      `SCLPPLowDuration`/`SCLI3CHighDuration` = 500ns each. 170/80 (4 MHz) left
+      the device unable to boot (`pwup ENABLE=0x4`, `#Err,CPU not ready`, chip
+      version 0.0). **SETDASA still succeeded**, so open-drain addressing was
+      fine and the push-pull private transfers were what broke — most likely
+      the jumper-wire interconnect rather than the silicon. Step ladder for a
+      bisection is in the source above the constants; each step costs a
+      flash-and-test because the failure mode is a dead device, not a degraded
+      one. **Low priority now** — the bus only binds at 32×32/48×32, and the
+      operating mode is 16×16. Still uncaptured: the `I3C kclk=… -> SCL~…kHz`
+      boot banner (added 08-25), which would confirm the actual kernel clock
+      and whether the ns→MHz arithmetic in that ladder is even right.
+- [ ] **No detection exists yet — this is the missing half of the project.**
+      Everything built so far is a viewer: it renders depth for a human. The
+      goal is presence and overhang sensing, and nothing currently classifies,
+      decides, or emits a signal. Start at D1 (background subtraction) in the
+      punch list.
+- [ ] **No test suite, and the changelog overstates this.** `test/` holds only
+      PlatformIO's README. The 08-19 entry says offline tests "cover the
+      adaptive floor… SpanTracker… the blend maths, and no-return
+      distinctness" — those were inline scripts that were never committed, as
+      were the 08-25 verifications. Matters because the B1 defect was a single
+      `|` that should have been `&`, which silently misrepresented the
+      hardware's dropout rate for weeks. That class of bug is exactly what a
+      suite catches.
+- [ ] **Measurements are not reproducible.** `.captures/` holds three files.
+      The 48% → 20% → 4% progression that changed the operating mode exists
+      only as screenshots. A capture format storing frames + preset + config
+      page + timestamp would turn every future comparison into an offline diff
+      instead of a bench session.
+- [ ] **Host-side config-page writer** (`b` → `0x31`, 190-byte payload). Gates
+      ~14 of the punch-list items, Stage 4 included. Highest-leverage tooling
+      task outstanding.
+- [ ] **Evaluate dual mode** (`dual_mode=1`, datasheet §7.3.1 p.26) — alternates
+      a default preset with its high-accuracy sibling and reports one combined
+      result, covering **10mm–11000mm in a single configuration**. Available at
+      16×16/32×32/48×32 per Table 7, not just 8×8. Largest unexploited
+      capability in the part.
+- [ ] **Evaluate on-chip motion detection** (§7.3.2 p.27) — `post_processing`,
+      `motion_distance`, `detect_snr`/`release_snr`, `motion_adjacent`,
+      `int_zone_mask`, plus ROI cropping via `mp_top_x/y`/`mp_bottom_x/y` and
+      `spad_cropping`. This is the phase's actual goal implemented in hardware,
+      and `int_threshold_low/high` (0x68-0x6B) are already declared in
+      `tmf8829_shim.h` but never written.
+- [ ] **Test the 7.6m aliasing case** (§7.7.2 p.32). Untestable indoors — needs
+      a corridor or outdoors. The viewer now colours `dist==0 & conf>0` magenta
+      specifically to make it visible when it occurs.
+- [ ] Enable spread-spectrum EMC settings (§7.7.1 p.32) — datasheet states "no
+      side effects other than reducing EMC noise". Cheap now, expensive after
+      an enclosure exists.
+
+**Full findings list (26 items, grouped and ordered):** published artifact,
+<https://claude.ai/code/artifact/07ffcc94-a785-48db-a47b-1338a21dcf87>
 
 <details>
 <summary>Phase 1 (I2C, 8×8) — completed checklist</summary>
@@ -114,29 +236,45 @@ wiring between the LightRanger 14 Click and the NUCLEO-H563ZI.
 `~/.platformio/penv/Scripts/pio.exe` directly. Python tooling runs from the
 repo-root `.venv` (gitignored; numpy, pyserial, opencv-python, pymupdf, pypdf,
 pyocd — pymupdf/pypdf are there for reading the datasheet and Click schematic
-PDFs, and pyocd is what flashes the board — see below).
+PDFs, and pyocd is the fallback flasher — see below).
 
 ```powershell
 pio run                          # build only (~3.1% flash, ~11.5 kB RAM at present)
-pio run --target upload          # build + flash over SWD via pyocd (see below)
+pio run --target upload          # build + flash to the mbed disk (see below)
 pio device monitor -p COM5 -b 2000000 -f direct   # match UART_BAUD_RATE
 .\.venv\Scripts\python.exe tools\tmf8829_viewer.py            # live GUI
 .\.venv\Scripts\python.exe tools\tmf8829_viewer.py --no-gui   # link check: want err hdr=0 pay=0
 .\.venv\Scripts\python.exe tools\tmf8829_subframe.py capture --seconds 20
 .\.venv\Scripts\python.exe tools\tmf8829_subframe.py solve    # re-verify the interleave
+.\.venv\Scripts\python.exe tools\tmf8829_soak.py --self-test  # prove auto-recovery works
+.\.venv\Scripts\python.exe tools\tmf8829_soak.py --minutes 120
 ```
 
 Two flags are load-bearing, each for a reason found the hard way: `-f direct`
 (miniterm's default filter eats the ESC bytes of the ANSI grid), and a `-b` that
 matches `monitor_speed`/`UART_BAUD_RATE`.
 
-**Upload does not use the ST-LINK's mbed virtual disk on this machine** — see
-the 08-17 changelog entry. `upload_protocol = custom` drives pyocd over SWD
-instead. One-time setup (already done here; needed on a fresh checkout):
+**Upload goes to the ST-LINK's mbed virtual disk** (`upload_protocol = mbed`,
+auto-detected as `D:` / `NOD_H563ZI` — pass **no** `--upload-port`). If it fails
+with "Please specify `upload_port`" and no mbed drive is mounted, that is the
+`WdDevFlt` USB mass-storage driver fault documented in the 08-17/08-18 entries;
+it is a driver-state problem on this machine, **the user has a known fix for it**
+— ask rather than working around it.
+
+The pyocd/SWD fallback (`upload_protocol = custom`, commented in
+`platformio.ini`) bypasses the mass-storage stack entirely and stays available.
+Its one-time setup is already done here; on a fresh checkout:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pyocd pack update
 .\.venv\Scripts\python.exe -m pyocd pack install stm32h563zitx
+```
+
+pyocd is also how you reset the board without reflashing (useful for capturing
+the boot banner while the monitor holds COM5):
+
+```powershell
+.\.venv\Scripts\python.exe -m pyocd reset -t stm32h563zitx
 ```
 
 **Only one process can hold COM5.** Close the monitor before running a Python
@@ -170,7 +308,8 @@ UART 1 Mbaud → Python. Four layers, in dependency order:
    sizing, zone decoding, ASCII rendering, binary streaming, key interception.
 4. **`tools/`** — host side. `tmf8829_viewer.py` (threaded reader → resyncing
    `FrameParser` → `SubFrameAssembler` → OpenCV), `tmf8829_subframe.py`
-   (capture + interleave solver).
+   (capture + interleave solver), `tmf8829_soak.py` (unattended soak with
+   automatic wedge recovery).
 
 Structural facts that span files, and are easy to break:
 
@@ -183,10 +322,20 @@ Structural facts that span files, and are easy to break:
   `enablePinHigh()` (the one point the device is powered and freshly reset), the
   assigned address is held in a shim static, and the transports **ignore the
   `slaveAddr` they are passed** — it is always stale.
-- **Extra keys are intercepted in the shim's `inputGetKey()`.** `b` (binary
-  stream) and `f` (full-resolution dump) are consumed there and never reach
-  `tmf8829_app.cpp`, which is why they are absent from the app's own `h` help
-  and are announced by a startup hint instead.
+- **Extra keys are intercepted in the shim's `inputGetKey()`.** `v` (binary
+  stream), `f` (full-resolution dump) and `t` (frame timing) are consumed there
+  and never reach `tmf8829_app.cpp`, which is why they are absent from the app's
+  own `h` help and are announced by a startup hint instead. Two rules constrain
+  what may be intercepted, both learned by breaking them:
+  - **`b` is reserved by the vendor app** — it enters binary input mode, the
+    only channel for the `0x31`/`0x32` config commands, i.e. the only way to set
+    measurement period and iteration count. Intercepting it (as this shim did
+    until 2026-08-19) makes that entire protocol unreachable. Don't take it back.
+  - **The intercept is skipped while `isInBinaryInputMode()`.** In that mode
+    every byte is payload, so an unguarded intercept eats any payload byte equal
+    to `f`/`v`/`t` and leaves the app waiting forever for a byte already
+    consumed. `isInBinaryInputMode()` is declared `extern` in the shim; it is in
+    no header.
 - **Frame decode path**, all in the shim: `handleReceivedFrameHeaderData()`
   derives geometry per frame (fp_mode = low nibble of the frame ID;
   `zones = (payload - 24) / pixelSize`, the 24 being 12 bytes of already-read
@@ -222,6 +371,446 @@ Structural facts that span files, and are easy to break:
 ---
 
 ## Changelog
+
+### 2026-09-28 — SPI found at 20 MHz (unused all along); application geometry pinned at 8 inches; scope pivots to an ESP32-S3 wireless node
+- **The TMF8829 has a 20 MHz SPI interface and this project has never used
+  it.** Datasheet §7.11 (p.40) plus the timing table on p.14. It has
+  **dedicated pins** — MOSI/GPIO0, MISO/GPIO3, SCLK/GPIO2, CSN/GPIO1 —
+  separate from SCL/SDA, and **INT/GPIO6 stays free**, so it is a clean 4-wire
+  SPI + INT + EN with no pin multiplexing cost. Both interfaces are live at
+  boot (§7.9, p.37) and the *first* bootloader command chooses one;
+  `tmf8829BootloaderCmdI2cOff()` already exists in the vendored driver
+  (`tmf8829.h:310`) and is what selects SPI.
+
+  | interface | max clock | 2316 B sub-frame |
+  |---|---|---|
+  | I²C | 1 MHz | 20.8 ms |
+  | I3C | 12.5 MHz | 1.7 ms |
+  | **SPI** | **20 MHz** | **0.93 ms** |
+  | *as built — I3C @ 1 MHz* | | *75 ms measured* |
+
+  **SPI is the fastest interface on the part.** This dissolves **Stage 4** and
+  the **I3C clock ladder** outright: at 48×32 transport drops from 92% of the
+  cycle to ~3%, and the 08-25 push-pull failure at 4 MHz stops mattering
+  because the bus is being left behind rather than tuned.
+- **FoV confirmed from the datasheet (p.15): FOVX 67.9°, FOVY 52.8°, 80°
+  diagonal.** The 08-13 ceiling run derived 67° × 51° independently from
+  slant-range geometry — **agreement to ~1%**, an unplanned end-to-end
+  validation of the decode chain, the 0.25mm LSB and the zone ordering all at
+  once. Rule of thumb worth carrying: **coverage width ≈ 1.35 × distance,
+  height ≈ 1.0 × distance.**
+- **Application geometry stated for the first time, and it is close range:
+  feet must be detected at 8 inches (~203 mm).** Three consequences, all of
+  which move previously-settled decisions:
+  - Coverage at 203 mm is **274 × 202 mm** — roughly one foot. A single sensor
+    **cannot span a ~70 cm bore** from that standoff; that needs ~700 mm of
+    standoff, or several sensors.
+  - **Range stops being a selection criterion.** Every mode is spec'd 13×+
+    beyond 203 mm, so the 08-25 choice of 16×16 (decided on reach in a 3-4 m
+    room) does not bind here. See the REOPENED note in Current status.
+  - A foot spans ~15×7 zones at 16×16 and ~40×17 at 48×32 at this range. The
+    system is **not resolution-starved, it is coverage-starved** — which is a
+    different problem with different answers (standoff, sensor count, pose).
+  - **Unresolved and blocking:** whether 8 inches is the *sensor standoff* or
+    the *trigger threshold* with the sensor mounted further back. This decides
+    sensor count, mounting and mode. Settle it first.
+- **Product shape clarified.** In the installed system the interface is a
+  **3-pin connector (power/ground/data)** carrying one digital signal that
+  tells the SPECT detectors to move. The radio is **commissioning-only and off
+  during imaging** — its job is proving the concept and, more importantly,
+  **finding the right sensor placement**, since coverage cannot be confirmed by
+  hoping it maps the right area.
+- **Pivot: Phase 3 targets an ESP32-S3.** The reasoning chain, in order:
+  SPI removes I3C as a selection constraint (ESP32 and nRF have none), so the
+  wireless field opens; detection compute is trivial (256-1536 zones at 30 Hz
+  is a fraction of any M4, ~1-2 kB for a background model), so MHz is not a
+  criterion; what remains is radio, certification and ecosystem.
+  **`ESP32-S3-WROOM-1`** is a pre-certified module with integrated antenna —
+  no RF layout, no radio certification, which is the dominant cost term for a
+  Siemens product. Streaming shape: **SoftAP + UDP**, so the laptop joins the
+  sensor's own AP (no hospital network, no IT involvement) and frames are
+  dropped rather than retransmitted — the same latency-over-completeness
+  choice the viewer's single-slot frame buffer already makes. Bandwidth is a
+  non-issue: 192 kbit/s at 16×16, 559 kbit/s at full 48×32.
+  **One MCU can drive several TMF8829s on one SPI bus with separate
+  chip-selects**, fused into a common coordinate frame — the strongest argument
+  for a custom PCB over the Click, and a reason to design the host tooling for
+  *N* posed sensors from the start.
+- **What ports and what does not.** The transport shim is rewritten either way
+  (I3C → SPI), so "preserve the STM32 work" is a weaker argument than it looks.
+  Portable: the zone decoder, the binary frame format and both its CRCs, and
+  all of `tools/`. Not portable: `i3c*` in `tmf8829_shim.cpp`, the
+  `HAL_I3C_MODULE_ENABLED` build flag, pyocd/mbed flashing.
+- **Ordering that wastes least effort:** (1) build the placement/coverage
+  visualisation host-side — pure Python against the existing serial stream, no
+  hardware change, and it is what answers the 8-inch geometry question;
+  (2) prove the SPI transport on the existing Click + H5 rig, which yields a
+  working SPI shim to port; (3) move to the ESP32-S3 dev board; (4) PCB last,
+  since working distance, sensor count and mode are its inputs.
+- **The real risk in the custom-PCB plan is optical, not electrical** —
+  cover-glass standoff, aperture geometry, and the crosstalk barrier between
+  VCSEL and receiver. That failure mode looks exactly like the Phase 1
+  high-confidence 0 mm corner block. Use ams's reference layout rather than
+  deriving the optical stack.
+
+### 2026-08-25 — 16×16 chosen over 48×32 on measured evidence; frame-rate deficit root-caused to the I3C clock; viewer no-return logic corrected
+- **Operating mode settled by experiment, and it reverses the phase's working
+  assumption.** Same scene, same sensor position, one keypress apart:
+
+  | | 48×32 (preconfig 71) | 16×16 (preconfig 67) |
+  |---|---|---|
+  | no-return | 20% | **4%** |
+  | frame rate | 5.4 fps | **30.3 fps** |
+  | 3-4m walls | invisible | resolved, mid-ramp |
+
+  48×32 reported the room's walls as empty space. Not a defect —
+  **datasheet Table 5 (p.16) specifies 48×32 to 2700mm** against a 90% white
+  card at centre pixel (1900mm at a corner, 1200mm for an 18% grey card),
+  versus **5900mm for 16×16**. The headline 11000mm belongs to 8×8 long range
+  at 2000k iterations *only*. Full resolution was the phase goal; 16×16 is the
+  operating point.
+- **Iteration tuning cannot fix this, and the datasheet supplies the numbers to
+  prove it.** The 8×8 long-range rows give two points on one curve: 300k
+  iterations → 8000mm, 2000k → 11000mm. That is range ∝ iterations^**0.17** —
+  ambient-limited, far weaker than the shot-noise-limited ^0.25 one would
+  assume. Lifting 48×32 from 2700mm to 5000mm would need ~**39×** the
+  iterations. No frame-time budget permits it. **Mode selection is the range
+  lever; `KILO_ITERATIONS` is not.**
+- **Frame-rate deficit root-caused by measurement.** `t` at 48×32 reports
+  `bus=75028 emit=11710 period=93815` µs/sub-frame — bus+emit is **92% of every
+  cycle**, so we are the bottleneck. But **the UART is innocent**: a 48×32
+  sub-frame is 2328 bytes, which at 2 Mbaud is 11.6ms, matching `emit` almost
+  exactly. The cost is **I3C: 75ms to move 2316 bytes = 31 kB/s**, on a bus
+  specified to 12.5 MHz. Cause is in `i3c1PeripheralInit()` —
+  `SCLPPLowDuration`/`SCLI3CHighDuration` at 500ns each is a **1 MHz** clock,
+  the conservative Stage 1 bring-up value, never revisited. (The prior
+  hypothesis in the shim's own comment — that emit was the bottleneck and DMA
+  TX was the fix — is now disproven.)
+- **Three viewer defects fixed, all of which were inflating the no-return
+  statistic that decisions were being made on. 48% → 20% on the same scene, at
+  48×32, with no sensor change whatsoever.**
+  - **`no_return` used OR where it needs AND.** `(dist==0)|(conf==0)` painted
+    as absent any zone reporting 0mm with a *real* confidence — which is not a
+    no-return but either an object at the 10mm minimum range or a **distant
+    object aliased onto 0mm** (§7.7.2: at the default VCSEL clock an object at
+    7.6m aliases to 0m). Now AND, with `dist==0 & conf>0` given its own
+    magenta colour and a `zero-dist %` counter.
+  - **`no_return` was evaluated on the *smoothed* array.** A zone returning
+    real data in 2 of 5 frames has a plain median of 0 and was recorded as
+    permanently dead — a filter tuned to delete exactly the intermittent weak
+    far returns worth seeing. At 5.4fps that window spans nearly a second.
+  - **The median ran across no-return zeros**, dragging flickering zones toward
+    0 even when most frames carried data. New `smooth_valid()` medians over
+    valid samples only; a zone with no valid sample anywhere stays 0/0 and is
+    honestly reported as a no-return. Verified offline: a zone reading 2500mm
+    in 2 of 5 frames now returns 2500mm where the old path returned 0.
+- **Colour ramp now follows the active preset** (`PRESET_MAX_MM`), because a
+  fixed 11000mm ramp is actively misleading outside 8×8 long range — at 48×32
+  three quarters of the palette is unreachable and it implies reach the mode
+  does not have. Two caveats worth keeping: the datasheet has **two different
+  "maximum" numbers** (Table 5 = detection distance, where returns stop;
+  Table 6 = the configured unambiguous *window* set by `histogram_bins`, past
+  which objects alias back down), so the table cites its source per entry and
+  uses Table 6 for the high-accuracy presets, where 64 bins bind at 1.4m well
+  before detection does. And **`fp_mode` cannot identify the preset** —
+  64/65/66 are all FP_8x8A yet span 5700/11000/5700mm — so the preset is
+  tracked from the board's own `Preconfig NN` reply **via `on_text`**, never by
+  scanning the rolling `text_lines` buffer (the trap recorded on 08-19).
+- **New I3C error signature, distinct from the wedge:** `I3C-TX failed
+  regAddr=0xE1 status=1 hi3c1.ErrorCode=0x100`. `0xE1` is INT_STATUS
+  (datasheet p.49); `status=1` is `HAL_ERROR` and `0x100` is
+  **`I3C_SER_ANACK`** — an address NACK, not the wedge's `0xF8`/`HAL_TIMEOUT`/
+  `0x20000`. Single occurrence at a preset change, recovered on its own. Recorded
+  because an ANACK is an **addressing-phase** failure, i.e. exactly the class
+  that worsens with faster bus timing — so this is the baseline to compare
+  against after the clock change above.
+- Datasheet sections read properly for the first time and worth knowing:
+  **§7.1** (how the 0.25mm resolution is achieved from 200ps/~30mm bins — peak
+  centroid over 600k pulses, plus an internal reference SPAD cancelling
+  VCSEL/TDC/temperature drift); **§7.5.1** (factory calibration covers 8×8 and
+  16×16 only, using 24 and 6 SPADs/zone; 32×32 and 48×32 use **1-2 SPADs/zone**
+  and *reuse* the 16×16 calibration, hence more offset error — this is the
+  quantified version of the optical-budget argument); **p.17** (precision is
+  **2mm + 0.5% of distance at 2σ**, accuracy ±3% beyond 300mm, and a footnote
+  warning that **SPAD "screamers"** give a few pixels permanently degraded
+  range in low ambient light).
+- Also: footer bands re-spaced (`FOOTER_H` 92→116 — the colour bar ended at
+  +28 and the first board-reply baseline was +36, so board text was drawn
+  through the ramp), and canvas padding darkened from (24,24,24) with an
+  explicit border, since it was indistinguishable from `NO_RETURN_COLOUR`
+  (28,28,28) and made a quarter of a 16×16 window look like dead zones.
+- **I3C clock raised to 4 MHz and reverted the same session — the interconnect,
+  not the silicon, is the limit.** 170ns/80ns (4 MHz) built and flashed clean
+  but left the device unable to boot: `pwup ENABLE=0x4`, `#Err,CPU not ready`,
+  chip version 0.0, serial 0x0. **Diagnostic split worth keeping: SETDASA
+  succeeded** (no `I3C-SETDASA failed` line), so the open-drain addressing
+  phase tolerated 4 MHz and the *push-pull private transfers* were what broke.
+  That is consistent with the Click being on jumper wires rather than a shield
+  — unshielded flying leads degrade edges well before the part's 12.5 MHz
+  ceiling matters. Reverted to 500/500; a step ladder (500/250, 330/330,
+  250/250, 170/170) is recorded above the constants in `tmf8829_shim.cpp`.
+  Method note: **4× was too large a first step.** The failure mode is a dead
+  device rather than a degraded one, so there is no host-side sweep — every
+  step is a flash-and-test, and a bisection should have started at 500/250.
+- A `I3C kclk=…MHz ppLow=… high=… -> SCL~…kHz` banner was added to
+  `i3c1PeripheralInit()` and prints at open and on every bus recovery, because
+  `i3cNsToCycles()` truncates and the I3C1 kernel clock is whatever the Arduino
+  core's clock tree gives. **Not yet captured on hardware** — it needs the
+  monitor open *before* an upload, since it only prints at startup. Until it is,
+  the MHz figures in the step ladder are arithmetic, not measurement.
+
+### 2026-08-19 — Renderer fixed: the "deadzones" were the viewer deleting real data
+- **Complaint was dropouts and poor far-field detail. Measured the scene before
+  touching anything, and the sensor was not at fault — the viewer was.** With
+  the old fixed `conf_min=40` mask, **18.4% of zones held real measurements and
+  were being painted flat gray**:
+
+  | distance | share of scene | median conf | masked at 40 |
+  |---|---|---|---|
+  | 0-500 mm | 52.1% | 128 | 1.4% |
+  | 500-1000 | 11.3% | 42 | **41.8%** |
+  | 1000-1500 | 12.4% | 40 | **50.0%** |
+  | 1500-2000 | 15.9% | 54 | 26.9% |
+  | 4000-6000 | 2.5% | 7 | **100%** |
+
+- **Root cause: confidence falls as ~1/distance, so no fixed threshold can
+  work.** Measured medians 128 @250mm, 42 @750mm, 7 @5000mm — 3× and 20× in
+  range give 3.0× and 18× in confidence, i.e. inverse-linear, *not* the
+  inverse-square an optical-power argument would predict. Tune the threshold
+  for the near field and it deletes the far field; tune it for the far field
+  and it accepts noise up close.
+- Fixes in `tools/tmf8829_viewer.py`, all measured rather than guessed:
+  - **Adaptive confidence floor** `conf_k / distance` (default k=15000, chosen
+    to track the measured 10th percentile of genuine returns, so ~90% of real
+    data stays fully coloured at every range). `--conf-mode fixed|off` keeps
+    the old behaviours.
+  - **Shading instead of a hard cutoff.** Marginal zones now fade toward gray
+    in proportion to confidence rather than vanishing. The binary cutoff is
+    what made uncertain data look like holes in the scene.
+  - **No-return zones are their own colour.** A zone with nothing to report
+    always comes back distance 0 *and* confidence 0 (verified: min=max=0 across
+    every such sample) — and distance 0 lands at the **near** end of the ramp,
+    i.e. bright red, reading as "object touching the sensor". The old fixed
+    mask happened to hide these, so the bug only appeared on pressing `M`.
+    They now render near-black and stay distinct with shading off.
+  - **Colour range: fixed at 100-11000mm**, the datasheet's maximum detection
+    range (Table 5, p.16). Auto-fitting to the scene was tried and made the
+    default, then **reverted on user direction** — the point of this work is
+    characterising what the sensor can do, and a range that follows the scene
+    destroys cross-session comparability and hides the sensor's real reach.
+    `--dist-auto` remains available, off by default.
+  - **`--dist-gamma`** (default 1.0 = linear) exists because of the tension a
+    full-scale ramp creates: a linear 0-11m map puts a 0-2m indoor scene in the
+    bottom fifth. A gamma below 1 gives the near field more of the ramp while
+    still spanning the full range. The colour bar inverts the gamma when
+    labelling, so the midpoint tick stays truthful.
+  - **Colour bar with mm labels**, in a new footer strip. Status text used to be
+    drawn straight onto the depth image, covering the bottom rows of zones.
+- **Verified against live data, before/after on the same frame**: auto range
+  chose 74..1677mm, 18.0% of zones recovered from gray into real structure, and
+  the 5.5% that genuinely have no data stayed visibly distinct.
+- `colourise()` was extracted so the GUI and offline tooling share one
+  implementation — a rendering question can now be answered without opening a
+  window. Offline tests cover the adaptive floor against the measured
+  percentiles, SpanTracker settling/exclusion behaviour, the blend maths, and
+  no-return distinctness.
+- Trap worth keeping: **`cv2` is imported lazily inside `run_gui()`** so
+  `--no-gui` works on a host without OpenCV. A module-level helper that uses
+  `cv2` breaks that; import it inside the function.
+
+### 2026-08-19 — `tools/tmf8829_soak.py`: unattended soak with automatic wedge recovery
+- Closes the gap the soak above exposed. The firmware recovers the *bus*; this
+  recovers the *device*, by replaying `s`→`d`→`e`→`m`→`v` when it sees
+  `I3C bus wedged` — so a run now survives an arbitrary number of wedges. It
+  logs the clean interval before each one, which is what turns "it wedges
+  sometimes" into a distribution worth reasoning about.
+- **`FrameParser` gained an `on_text` callback** (and a configurable
+  `text_history`). This is the structural fix for the bug that made the first
+  soak misreport: `text_lines` is a rolling buffer sized for the viewer's
+  2-line display, so **polling it — or its length — silently drops lines the
+  moment the board repeats an error fast enough to saturate it**. `on_text`
+  fires once per line as parsed. Anything that must not miss a line must use
+  it. Viewer defaults are unchanged (`on_text=None`, history 12).
+- **`--self-test` exercises the restore path once and exits.** The restore code
+  is by definition the code that runs when nobody is watching, so it should not
+  first execute eight hours into an unattended run. Confirmed on hardware:
+  90 frames before, restore, 90 frames after — 30 fps either side.
+- Robustness choices, each from something actually observed today: streaming is
+  turned on by **reading back** `Binary streaming ON` rather than pressing once
+  (the toggle survives disable/enable, and a blind press turns it off); the
+  preconfig is reselected after every restore by **reading back** `Preconfig NN`
+  (`configNr` is not reset by `e`); the stall threshold is 20 s because a
+  legitimate `e` stops frames for ~4 s; and a `recovery failed` line stops the
+  run rather than looping, since that state needs a board reset.
+
+### 2026-08-19 — WEDGE REPRODUCED AND RECOVERED IN SOFTWARE; DISEC did not prevent it
+- **The soak finally caught it, and the recovery path works.** 16×16 binary
+  streaming ran **16.5 minutes / ~29,600 frames at 29.9 fps with zero CRC
+  errors**, then wedged with the exact 08-13 signature:
+  `I3C-TX failed regAddr=0xF8 status=3 hi3c1.ErrorCode=0x20000` (`HAL_TIMEOUT`,
+  on the routine per-frame status poll). `i3cRecoverBus()` tripped on its 3rd
+  consecutive failure and power-cycled the device.
+- **Two conclusions, one negative and one positive:**
+  - **The DISEC IBI-disable did NOT prevent the wedge.** That hypothesis, open
+    since 08-13, is now answered: disabling target-initiated events is not the
+    fix. The underlying cause remains unknown.
+  - **The recovery does work, end to end, with nobody touching the board.**
+    Confirmed by hardware probe, not by log text: after the power-cycle,
+    `Chip Version 158.1` read back correctly — which requires working I3C
+    transactions, so the bus is genuinely restored.
+- **Restoring the bus is not enough to resume measuring** — exactly as the
+  recovery message says. The power-cycle resets the sensor, so it comes back in
+  the **bootloader state** (`Firmware Application Version 128.33.0.0`, serial
+  `0x0`) with a stale `state=measure`. That is the same signature recorded on
+  08-17, and the same fix applies: **`s` → `d` → `e`**, which restored
+  `1.2.200.0` / serial `0x51067D`, then `m` + stream toggle brought back
+  **30 fps streaming**. No power cycle, no reflash, no physical access.
+- **So the gap is now precisely defined, and it is small**: recovery is
+  automatic up to the bus, and manual from there. A host-side watchdog that
+  sees the `I3C bus recovered` line and replays `s`→`d`→`e`→`m` would close it
+  and make long unattended runs viable. That is the natural next task.
+- Time-to-failure now has two samples — **23+ min and 16.5 min** — both after a
+  long clean stretch at full rate. Consistent with random onset rather than a
+  periodic trigger, and not obviously load-related. Still too few samples to
+  characterise; more soaks would need the watchdog above to be worth running.
+- **Two host-script traps hit while measuring this, both worth avoiding again:**
+  - `FrameParser.text_lines` is a **rolling 12-entry buffer**, so
+    `len(lines) != last_len` as a change detector **silently stops working**
+    once it saturates — which is exactly what happens when an error line
+    repeats. That is why the soak log captured the wedge but missed the
+    `recovered` verdict. Scan buffer contents, never its length.
+  - The stream toggle is **stateful across sensor disable/enable** (it lives in
+    MCU RAM). A script that blindly sends it can turn streaming *off* right
+    before its own capture window — which happened here and produced a
+    misleading "not streaming" result. Always read back the
+    `Binary streaming ON/OFF` reply and re-toggle if needed.
+
+### 2026-08-19 — `b` returned to the vendor app; stream toggle moved to `v`; ams GUI path evaluated and declined
+- **Found a real defect while scoping the ams EVM GUI: our shim was shadowing
+  `b`.** The vendor app uses `b` to enter binary input mode
+  (`tmf8829_app.cpp:743` → `enterBinaryInputMode()`), which is the only channel
+  for the `0x31` set-config and `0x32` set-preconfig commands. Our
+  `inputGetKey()` consumed `b` for the binary-stream toggle, so that protocol
+  was unreachable — and the comment above the intercept asserted the opposite
+  ("Neither key is used by the vendor app, so nothing is shadowed"), which is
+  how it survived. `f` and `t` were and remain genuinely free.
+- **This mattered more than it looked.** The config page carries
+  `TMF8829_CFG_PERIOD_MS` (0x22/0x23) and `TMF8829_CFG_KILO_ITERATIONS`
+  (0x24/0x25) — measurement period and iteration count, i.e. exactly the knobs
+  Stage 4 needs. We had no way to set them; `c` only cycles the nine fixed
+  preconfigs. So this was blocking Stage 4 without anyone noticing.
+- Fixes, both in `tmf8829_shim.cpp`: stream toggle moved `b` → **`v`**, and the
+  intercept is now **skipped entirely while `isInBinaryInputMode()`**. The
+  second half is the subtler bug: without it, a payload byte equal to
+  `f`/`v`/`t` (0x66/0x76/0x74 — all plausible inside a 190-byte config page)
+  would be eaten by the shim and the app would wait forever for a byte that had
+  already been consumed. `isInBinaryInputMode()` is in no header, so it is
+  declared `extern` in the shim; both files are C++ so the mangled names match.
+- Host side: `tools/tmf8829_viewer.py` forwards `v` instead of `b`, and **`b` is
+  deliberately excluded from the forwarded set** — forwarding it would drop the
+  board into binary input mode and swallow subsequent keys.
+- **Verified on hardware, three assertions, all passing**: (1) `b` now reaches
+  the app and prints `Binary input mode active`; (2) a following `0x66` is
+  reported as `#Err,BinaryCmd,66` — proving `f` was passed through as payload
+  rather than intercepted, which is the mode-guard test; (3) `v` still streams —
+  **449 frames, 29.9 fps, 0 header and 0 payload CRC errors** in steady state,
+  matching the pre-change 30.3 fps baseline.
+- Measurement note worth reusing: `FrameParser.text_lines` is a **rolling
+  12-entry buffer**, so index-based marking into it is invalid once the ASCII
+  preview floods it — scan the whole buffer. And the ASCII→binary transition
+  costs exactly one header-CRC resync (a false sync inside the trailing ANSI
+  preview); measure steady state with a fresh parser or that lone error looks
+  like a link fault.
+- **ams EVM GUI: evaluated, declined as infrastructure.** Findings, since this
+  will come up again:
+  - The GUI never touches hardware. It is a ZeroMQ client; ams ships three
+    server backends (Raspberry Pi Zero W = host type 3, Arduino over UART = 2,
+    an **STM32H503 USB-to-I²C bridge** on the shield = 4). Loggers are separate
+    clients on the same bus, so the GUI would *not* block a detection client.
+  - But we have no shield and no EVM, so the entry price is writing a zmq server
+    adapter — and what it buys is a config panel plus a viewer we already have.
+    At 32×32/48×32 the GUI shows z **as colour only, no numbers** (UG §3.2,
+    p.14), which is worse than our `f` dump.
+  - Decisive: everything we need from it is reachable directly via `u` +
+    `0x31`. The GUI is a UI over a protocol we can now drive ourselves.
+  - Frame-rate reality check, relevant to Stage 4: **~15 fps is the sensor's own
+    ceiling at 48×32** (66 ms cycle, datasheet Table 5; ams marketing
+    independently states "up to 15 fps"). And ams's own Arduino README warns
+    that at 32×32/48×32 the Uno path loses frames unless the measurement period
+    is raised — that is an Uno I²C/UART limit we already engineered past with
+    I3C and `DATA_BUFFER_SIZE = 2400`, not something to inherit.
+  - No community evidence exists either way — no forum threads, no issues, no
+    write-ups. All findings above are vendor-authored. Third-party hardware
+    running this sensor does exist (ProtoCentral's breakout, ESP32/RP2040/SAMD),
+    but it ships its own visualiser, not the ams GUI.
+- Keep the GUI installed: it remains the one **independent implementation** to
+  cross-check our empirically-derived sub-frame interleave and `fliplr`
+  orientation against, if a shield or EVM ever turns up. Not worth writing an
+  adapter to obtain.
+
+### 2026-08-19 — USB/mbed flashing restored as the primary path; pyocd demoted to fallback
+- **The USB mass-storage fault is resolved as an operational blocker.** The
+  user reports it was USB driver weirdness specific to these work machines,
+  and now knows how to fix it if it recurs — so the two prior entries' framing
+  ("recurring fault, default to pyocd until IT resolves it") is superseded:
+  a wedged mbed disk is now a known-fixable speed bump, not a reason to route
+  around the mass-storage stack permanently.
+- `platformio.ini` back to `upload_protocol = mbed` as primary, with the pyocd
+  `custom`/`upload_command` pair kept commented directly beneath it. **Verified
+  by actually flashing**, not by seeing a drive letter: `D:` mounts as
+  `NOD_H563ZI`, and `pio run --target upload` reported `Auto-detected: D:\` →
+  `Firmware has been successfully uploaded.` (65752 B flash, 11556 B RAM —
+  unchanged from the pyocd builds, so the image is the same one).
+- Commands section updated to match, and the pyocd **reset** invocation
+  (`pyocd reset -t stm32h563zitx`) recorded explicitly — that one is still
+  worth keeping regardless of flash path, since it resets the board without
+  reflashing while the monitor holds COM5.
+- Nothing about the firmware changed here. The open items below are untouched:
+  Stage 4 frame-rate validation, and the DISEC/recovery build still un-soak-tested.
+
+### 2026-08-18 (later same day) — WdDevFlt re-wedged hours after the reboot; back to pyocd, and this is now confirmed recurring
+- **The fault came back the same day.** `Get-WinEvent` on `Kernel-PnP` event
+  **219** shows fresh `WdDevFlt failed to load, status 0xC000038E` entries
+  starting ~11:13am, for the mbed drive *and* two different USB sticks
+  (`General USB_Flash_Disk`, `Verbatim STORE_N_GO`) — same signature as every
+  prior occurrence, just hours after the reboot below had cleared it.
+- **Conclusion: this is a recurring fault on this machine, not a one-time
+  glitch a single reboot permanently fixes.** A reboot is a temporary
+  workaround, not a resolution — expect it to resurface again within a
+  session. Worth reporting to IT with the diagnostic specifics already on
+  record (`WdDevFlt` boot-start service, `Kernel-PnP` 219, `0xC000038E`,
+  reproducible on any USB mass-storage device) rather than rebooting through
+  it indefinitely.
+- `platformio.ini` switched back to `upload_protocol = custom` (pyocd/SWD),
+  re-verified working (`Erased 8192 bytes ... programmed 1024 bytes ...
+  identical 65536 bytes`) — unaffected by the driver fault, as expected. The
+  `mbed` block is kept commented, to swap back in only after a reboot when
+  the drive is confirmed mounted again.
+- **Practical guidance going forward**: default to pyocd/SWD for flashing on
+  this machine rather than treating `mbed` as the steady-state primary — flip
+  to `mbed` opportunistically, not as a fix to leave in place.
+
+### 2026-08-18 — WdDevFlt USB mass-storage fault cleared by a reboot; `upload_protocol` back to `mbed`
+- **The Defender Device Control fault from the 08-17 entry below is gone.**
+  A reboot brought back the ST-LINK's mbed virtual disk (`D:`) *and* an
+  unrelated personal USB flash drive that had been failing to mount on this
+  machine since at least 08-13 — confirming the fault was general to USB mass
+  storage, not mbed-specific, and that a reboot (not admin rights, not a
+  policy change) is what clears a wedged `WdDevFlt` load.
+- Verified by actually flashing, not just by seeing the drive letter:
+  `upload_protocol = mbed` build+upload succeeded (`Auto-detected: D:\`,
+  `Firmware has been successfully uploaded.`), and a subsequent SWD reset
+  captured the boot banner (the shim's `f`/`b`/`t` lines), confirming the
+  image written via mbed is what's actually running.
+- `platformio.ini` reverted to `upload_protocol = mbed` as primary; the
+  pyocd/SWD command from 08-17 is kept commented in place as the fallback
+  if this driver wedges again (it doesn't depend on the mass-storage stack
+  at all, so it's the more robust of the two long-term).
+- **Not yet known: whether/when this recurs.** No root cause for why
+  `WdDevFlt` got stuck in the first place was found (only that a reboot
+  fixes it), so this may resurface after a future update or sleep/wake
+  cycle. If `mbed` upload fails again with a missing upload disk, that's
+  the signal to flip back to the commented pyocd lines.
 
 ### 2026-08-17 — COM5 contention incident; viewer/tools hardened; link re-verified end to end
 - **"Board stopped responding" after the upload fix was three processes
